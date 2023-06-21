@@ -20,7 +20,10 @@
 package org.xwiki.notifications.internal;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -44,13 +47,15 @@ public class DefaultGroupingEventStrategy implements GroupingEventStrategy
     @Inject
     private SimilarityCalculator similarityCalculator;
 
-    private static final class BestSimilarity
+    private static final class BestSimilarityHolder
     {
-        public int value;
+        int value;
 
-        public CompositeEvent compositeEvent;
+        CompositeEvent compositeEvent;
 
-        public Event event;
+        Event event;
+
+        int compositeEventSimilary;
 
         public boolean isCompositeEventCompatibleWith(Event event)
         {
@@ -61,29 +66,29 @@ public class DefaultGroupingEventStrategy implements GroupingEventStrategy
             // (or vice versa)
             // It means the "update" event A has been triggered for technical reason, but the interesting event is
             // B, which we can group with the event E even if it lowers the similarity between the events.
-            return compositeEvent
-                .getSimilarityBetweenEvents() >= SimilarityCalculator.SAME_GROUP_ID_AND_DOCUMENT_BUT_DIFFERENT_TYPES
+            return compositeEventSimilary >= SimilarityCalculator.SAME_GROUP_ID_AND_DOCUMENT_BUT_DIFFERENT_TYPES
                 && compositeEvent.getType().equals(event.getType());
         }
     }
 
-    private void recordEvent(List<CompositeEvent> results, Event event) throws NotificationException
+    private void recordEvent(List<BestSimilarityHolder> bestSimilarityHolderList, Event event)
+            throws NotificationException
     {
-        BestSimilarity bestSimilarity = getBestSimilarity(results, event);
+        BestSimilarityHolder bestSimilarityHolder = getBestSimilarity(bestSimilarityHolderList, event);
 
-        if (bestSimilarity.compositeEvent != null) {
-            if (bestSimilarity.value > bestSimilarity.compositeEvent.getSimilarityBetweenEvents()
-                && bestSimilarity.compositeEvent.getEvents().size() > 1) {
+        if (bestSimilarityHolder != null) {
+            if (bestSimilarityHolder.value > bestSimilarityHolder.compositeEventSimilary
+                && bestSimilarityHolder.compositeEvent.getEvents().size() > 1) {
                 // We have found an event A inside a composite event C1 that have a greater similarity with the event E
                 // than the similarity between events (A, B, C) of that composite event (C1).
                 //
                 // It means we must remove the existing event A from that composite event C1 and create a new composite
                 // event C2 made of A and E.
-                bestSimilarity.compositeEvent.remove(bestSimilarity.event);
+                bestSimilarityHolder.compositeEvent.remove(bestSimilarityHolder.event);
 
                 // Instead of creating a new composite event with A and E, we first look if an other composite event can
                 // match with A and E.
-                BestSimilarity bestSecondChoice = getBestSimilarity(results, event);
+                BestSimilarityHolder bestSecondChoice = getBestSimilarity(bestSimilarityHolderList, event);
                 if (bestSecondChoice.compositeEvent != null && bestSecondChoice.isCompositeEventCompatibleWith(event)) {
                     // We have found a composite event C2 made of events (X, Y) which have a greater similarity between
                     // themselves than between X and the event E.
@@ -95,24 +100,17 @@ public class DefaultGroupingEventStrategy implements GroupingEventStrategy
                     // (or vice versa)
                     // It means the "update" event X has been triggered for technical reason, but the interesting event
                     // is Y, which we can group with the event E.
-                    bestSecondChoice.compositeEvent.add(bestSimilarity.event,
-                        bestSecondChoice.compositeEvent.getSimilarityBetweenEvents());
-                    bestSecondChoice.compositeEvent.add(event,
-                        bestSecondChoice.compositeEvent.getSimilarityBetweenEvents());
-                } else {
-                    CompositeEvent newCompositeEvent = new CompositeEvent(event);
-                    newCompositeEvent.add(bestSimilarity.event, bestSimilarity.value);
-                    results.add(newCompositeEvent);
+                    bestSecondChoice.compositeEvent.add(bestSimilarityHolder.event);
+                    bestSecondChoice.compositeEvent.add(event);
+                    bestSimilarityHolderList.remove(bestSimilarityHolder);
                 }
-
-                return;
-            } else if (bestSimilarity.value >= bestSimilarity.compositeEvent.getSimilarityBetweenEvents()) {
+                bestSimilarityHolderList.add(bestSecondChoice);
+            } else if (bestSimilarityHolder.value >= bestSimilarityHolder.compositeEventSimilary) {
                 // We have found a composite event C1 made of events (A, B, C) which have the same similarity between
                 // themselves than between A end E.
                 // All we need to do it to add E to C1.
-                bestSimilarity.compositeEvent.add(event, bestSimilarity.value);
-                return;
-            } else if (bestSimilarity.isCompositeEventCompatibleWith(event)) {
+                bestSimilarityHolder.compositeEvent.add(event);
+            } else if (bestSimilarityHolder.isCompositeEventCompatibleWith(event)) {
                 // We have found a composite event C1 made of events (A, B) which have a greater similarity between
                 // themselves than between A and the event E.
                 // It means we cannot add E in C1.
@@ -123,53 +121,62 @@ public class DefaultGroupingEventStrategy implements GroupingEventStrategy
                 // (or vice versa)
                 // It means the "update" event A has been triggered for technical reason, but the interesting event is
                 // B, which we can group with the event E.
-                bestSimilarity.compositeEvent.add(event, bestSimilarity.compositeEvent.getSimilarityBetweenEvents());
-                return;
+                bestSimilarityHolder.compositeEvent.add(event);
             }
         }
-        // We haven't found an event that is similar to the current one, so we create a new composite event
-        results.add(new CompositeEvent(event));
+        if (bestSimilarityHolder == null) {
+            // We haven't found an event that is similar to the current one, so we create a new composite event
+            CompositeEvent compositeEvent = new CompositeEvent(event);
+            bestSimilarityHolder = new BestSimilarityHolder();
+            bestSimilarityHolder.compositeEvent = compositeEvent;
+            bestSimilarityHolder.event = event;
+            bestSimilarityHolderList.add(bestSimilarityHolder);
+        }
     }
 
-    private BestSimilarity getBestSimilarity(List<CompositeEvent> results, Event event)
+    private BestSimilarityHolder getBestSimilarity(List<BestSimilarityHolder> bestSimilarityHolderList, Event event)
     {
-        BestSimilarity bestSimilarity = new BestSimilarity();
+        BestSimilarityHolder bestSimilarityHolder = null;
 
         // Looking for the most similar event inside the existing composite events
-        for (CompositeEvent existingCompositeEvent : results) {
+        for (BestSimilarityHolder holder : bestSimilarityHolderList) {
+            CompositeEvent existingCompositeEvent = holder.compositeEvent;
             for (Event existingEvent : existingCompositeEvent.getEvents()) {
                 int similarity = similarityCalculator.computeSimilarity(event, existingEvent);
-                if (similarity < existingCompositeEvent.getSimilarityBetweenEvents()) {
+                if (similarity < holder.compositeEventSimilary) {
                     // Penality
                     similarity -= 5;
                 }
-                if (similarity > bestSimilarity.value) {
-                    bestSimilarity.value = similarity;
-                    bestSimilarity.event = existingEvent;
-                    bestSimilarity.compositeEvent = existingCompositeEvent;
+                if (similarity > holder.value) {
+                    holder.compositeEventSimilary = holder.value;
+                    holder.value = similarity;
+                    holder.event = existingEvent;
+                    bestSimilarityHolder = holder;
                 }
             }
         }
 
-        return bestSimilarity;
+        return bestSimilarityHolder;
     }
 
     @Override
     public List<CompositeEvent> group(List<Event> eventList) throws NotificationException
     {
-        List<CompositeEvent> result = new ArrayList<>();
+        List<BestSimilarityHolder> bestSimilarityHolderList = new ArrayList<>();
         for (Event event : eventList) {
-            recordEvent(result, event);
+            recordEvent(bestSimilarityHolderList, event);
         }
 
-        return result;
+        return bestSimilarityHolderList.stream()
+                .map(bestSimilarityHolder -> bestSimilarityHolder.compositeEvent)
+                .collect(Collectors.toList());
     }
 
     @Override
     public void group(List<CompositeEvent> compositeEvents, List<Event> newEvents) throws NotificationException
     {
         for (Event newEvent : newEvents) {
-            recordEvent(compositeEvents, newEvent);
+            //recordEvent(compositeEvents, newEvent);
         }
     }
 }

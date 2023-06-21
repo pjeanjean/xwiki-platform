@@ -19,13 +19,8 @@
  */
 package org.xwiki.notifications;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
@@ -46,6 +41,8 @@ public class CompositeEvent
 
     private int similarityBetweenEvents;
 
+    private String type;
+
     /**
      * Construct a CompositeEvent.
      * 
@@ -54,6 +51,7 @@ public class CompositeEvent
     public CompositeEvent(Event event)
     {
         events.add(event);
+        this.type = event.getType();
     }
 
     /**
@@ -65,6 +63,7 @@ public class CompositeEvent
     {
         this.events = new ArrayList<>(compositeEvent.events);
         this.similarityBetweenEvents = compositeEvent.similarityBetweenEvents;
+        this.type = compositeEvent.getType();
     }
 
     /**
@@ -72,11 +71,7 @@ public class CompositeEvent
      */
     public List<String> getEventIds()
     {
-        ArrayList results = new ArrayList(events.size());
-        for (Event event : events) {
-            results.add(event.getId());
-        }
-        return results;
+        return events.stream().map(Event::getId).collect(Collectors.toList());
     }
 
     /**
@@ -141,6 +136,8 @@ public class CompositeEvent
             // We are most interested in "advanced" event that we are in "core" events such as "create" or "update",
             // which often are the technical consequences of the real event (ex: a comment has been added).
             // FIXME: this sounds really like a hack: we should probably instead allow to set the type.
+            // This is actually used also for the default grouping strategy to hide some events, so we will move it
+            // there, and set the type using same heuristic in there.
             if (StringUtils.isNotBlank(event.getType()) && !"create".equals(event.getType())
                 && !"update".equals(event.getType())) {
                 type = event.getType();
@@ -149,10 +146,15 @@ public class CompositeEvent
         return type;
     }
 
+    public void setType(String type) {
+        this.type = type;
+    }
+
     /**
      * @return the groupId of the first event of the current object
+     * @deprecated this can be replaced by a call to {@link #getEvents()} and {@link Event#getGroupId()}
      */
-    // FIXME: To deprecate? Not so sure what it's used for...
+    @Deprecated(since = "15.5")
     public String getGroupId()
     {
         return events.get(0).getGroupId();
@@ -161,22 +163,23 @@ public class CompositeEvent
     /**
      * @return the document of the first event of the current object
      */
-    // FIXME: We probably need a getDocuments
     public DocumentReference getDocument()
     {
         return events.get(0).getDocument();
     }
 
+    public Set<DocumentReference> getDocuments()
+    {
+        return events.stream().map(Event::getDocument).filter(Objects::nonNull).collect(Collectors.toSet());
+    }
+
     /**
+     * Retrieve and return users of all events, including guest: the set might contain a {@code null} value.
      * @return the users who performed the events
      */
     public Set<DocumentReference> getUsers()
     {
-        Set<DocumentReference> users = new HashSet();
-        for (Event event : events) {
-            users.add(event.getUser());
-        }
-        return users;
+        return events.stream().map(Event::getUser).collect(Collectors.toSet());
     }
 
     /**
@@ -185,15 +188,8 @@ public class CompositeEvent
      */
     public Date getDate()
     {
-        Iterator<Event> it = events.iterator();
-        Event chosenEvent = it.next();
-        while (it.hasNext()) {
-            Event event = it.next();
-            if (event.getDate().compareTo(chosenEvent.getDate()) > 0) {
-                chosenEvent = event;
-            }
-        }
-        return chosenEvent.getDate();
+        // events are sorted by date
+        return events.get(0).getDate();
     }
 
     /**
@@ -201,12 +197,8 @@ public class CompositeEvent
      */
     public List<Date> getDates()
     {
-        List<Date> dates = new ArrayList<>();
-        for (Event event : events) {
-            dates.add(event.getDate());
-        }
-        Collections.sort(dates, Collections.reverseOrder());
-        return dates;
+        // events are sorted by date
+        return events.stream().map(Event::getDate).collect(Collectors.toList());
     }
 
     /**
@@ -230,9 +222,8 @@ public class CompositeEvent
             CompositeEvent compositeEvent = (CompositeEvent) obj;
 
             EqualsBuilder builder = new EqualsBuilder();
-            builder.append(getSimilarityBetweenEvents(), compositeEvent.getSimilarityBetweenEvents());
-            builder.append(getEvents(), compositeEvent.getEvents());
-
+            builder.append(this.events, compositeEvent.events);
+            builder.append(this.type, compositeEvent.type);
             return builder.build();
         }
 
@@ -243,9 +234,8 @@ public class CompositeEvent
     public int hashCode()
     {
         HashCodeBuilder builder = new HashCodeBuilder();
-
-        builder.append(getSimilarityBetweenEvents());
-        builder.append(getEvents());
+        builder.append(this.events);
+        builder.append(this.type);
 
         return builder.build();
     }
